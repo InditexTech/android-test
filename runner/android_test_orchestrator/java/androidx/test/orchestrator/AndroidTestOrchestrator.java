@@ -158,6 +158,19 @@ public final class AndroidTestOrchestrator extends android.app.Instrumentation
   private String test;
   private Iterator<String> testIterator;
 
+  // Retry logic fields
+  private static final String RETRY_COUNT_ARGUMENT = "retryCount";
+  private int maxRetries = 0;
+  private int totalFailureCount = 0;
+  private java.util.Map<String, TestRetryInfo> testRetryMap = new java.util.HashMap<>();
+  
+  private static class TestRetryInfo {
+    int attempts = 0;
+    boolean passed = false;
+    boolean flaky = false;
+    int failureCountBeforeTest = 0;
+  }
+
   public AndroidTestOrchestrator() {
     super();
     // We never want to execute multiple tests in parallel.
@@ -185,6 +198,17 @@ public final class AndroidTestOrchestrator extends android.app.Instrumentation
 
     this.arguments = arguments;
     this.arguments.putString(ORCHESTRATOR_SERVICE_ARGUMENT, ORCHESTRATOR_SERVICE_LOCATION);
+
+    // Read retry count argument
+    String retryCountStr = arguments.getString(RETRY_COUNT_ARGUMENT);
+    if (retryCountStr != null) {
+      try {
+        maxRetries = Integer.parseInt(retryCountStr);
+        Log.i(TAG, "Retry mode enabled with maxRetries=" + maxRetries);
+      } catch (NumberFormatException e) {
+        Log.w(TAG, "Invalid retryCount argument: " + retryCountStr);
+      }
+    }
 
     super.onCreate(arguments);
     start();
@@ -317,12 +341,42 @@ public final class AndroidTestOrchestrator extends android.app.Instrumentation
       testIterator = allTests.iterator();
       addListeners(allTests.size());
 
+      // Initialize retry map for all tests
+      if (maxRetries > 0) {
+        for (String testName : allTests) {
+          testRetryMap.put(testName, new TestRetryInfo());
+        }
+        Log.i(TAG, "Initialized retry tracking for " + allTests.size() + " tests");
+      }
+
       if (allTests.isEmpty()) {
         finish(Activity.RESULT_CANCELED, createResultBundle());
         return;
       }
     } else {
       listenerManager.testProcessFinished(getOutputFile(test));
+      
+      // Track test result and check if we should retry
+      if (maxRetries > 0 && trackTestResult(test)) {
+        // Immediate retry - re-execute the same test
+        Log.i(TAG, "RETRY: Immediately retrying test: " + test);
+        TestRetryInfo info = testRetryMap.get(test);
+        info.failureCountBeforeTest = totalFailureCount;
+        
+        listenerManager.testProcessStarted(new ParcelableDescription(test));
+        String coveragePath = addTestCoverageSupport(arguments, test);
+        if (coveragePath != null) {
+          arguments.putString(AJUR_COVERAGE_FILE, coveragePath);
+        }
+        clearPackageData();
+        executorService.execute(
+            TestRunnable.singleTestRunnable(
+                getContext(), getSecret(arguments), arguments, getOutputStream(), this, test));
+        if (coveragePath != null) {
+          arguments.remove(AJUR_COVERAGE_FILE);
+        }
+        return;
+      }
     }
 
     if (runsInIsolatedMode(arguments)) {
@@ -348,10 +402,19 @@ public final class AndroidTestOrchestrator extends android.app.Instrumentation
 
   private void executeNextTest() {
     if (!testIterator.hasNext()) {
-      finish(Activity.RESULT_OK, createResultBundle());
+      finishWithRetryReport();
       return;
     }
     test = testIterator.next();
+    
+    // Capture failure count before test execution for retry logic
+    if (maxRetries > 0) {
+      TestRetryInfo info = testRetryMap.get(test);
+      if (info != null) {
+        info.failureCountBeforeTest = totalFailureCount;
+      }
+    }
+    
     listenerManager.testProcessStarted(new ParcelableDescription(test));
     String coveragePath = addTestCoverageSupport(arguments, test);
     if (coveragePath != null) {
@@ -364,6 +427,111 @@ public final class AndroidTestOrchestrator extends android.app.Instrumentation
     if (coveragePath != null) {
       arguments.remove(AJUR_COVERAGE_FILE);
     }
+  }
+
+  private boolean trackTestResult(String testName) {
+    TestRetryInfo info = testRetryMap.get(testName);
+    if (info == null) {
+      return false;
+    }
+    
+    info.attempts++;
+    
+    // Check if the test had failures by looking at the result file
+    boolean testFailed = false;
+    try {
+      String outputFilePath = getOutputFile(testName);
+      if (outputFilePath != null) {
+        java.io.File outputFile = new java.io.File(outputFilePath);
+        if (outputFile.exists()) {
+          java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(outputFile));
+          String line;
+          while ((line = reader.readLine()) != null) {
+            if (line.contains("FAILURES!!!") || (line.contains("Tests run:") && line.contains("Failures:") && !line.contains("Failures: 0"))) {
+              testFailed = true;
+              totalFailureCount++;
+              break;
+            }
+          }
+          reader.close();
+        }
+      }
+    } catch (Exception e) {
+      Log.w(TAG, "Error checking test result: " + e.getMessage());
+      // Assume failed if we can't read the file
+      testFailed = true;
+      totalFailureCount++;
+    }
+    
+    int failuresSinceStart = testFailed ? 1 : 0;
+    
+    if (failuresSinceStart == 0) {
+      // Test passed
+      if (info.attempts > 1) {
+        info.flaky = true;
+        Log.i(TAG, "RETRY: Test " + testName + " PASSED on attempt " + info.attempts + " (flaky)");
+      } else {
+        Log.i(TAG, "RETRY: Test " + testName + " PASSED on attempt " + info.attempts);
+      }
+      info.passed = true;
+      return false; // Don't retry
+    } else {
+      // Test failed
+      Log.i(TAG, "RETRY: Test " + testName + " FAILED on attempt " + info.attempts + 
+            " (total failures: " + totalFailureCount + ")");
+      
+      if (info.attempts < (maxRetries + 1)) {
+        return true; // Retry
+      } else {
+        Log.i(TAG, "RETRY: Test " + testName + " exhausted all retries (" + info.attempts + " attempts)");
+        return false; // No more retries
+      }
+    }
+  }
+
+  private void finishWithRetryReport() {
+    if (maxRetries > 0) {
+      int stablePassed = 0;
+      int flaky = 0;
+      int failed = 0;
+      
+      for (java.util.Map.Entry<String, TestRetryInfo> entry : testRetryMap.entrySet()) {
+        TestRetryInfo info = entry.getValue();
+        if (info.passed && !info.flaky) {
+          stablePassed++;
+        } else if (info.flaky) {
+          flaky++;
+        } else {
+          failed++;
+        }
+      }
+      
+      Log.i(TAG, "=== RETRY SUMMARY ===");
+      Log.i(TAG, "Stable passed: " + stablePassed);
+      Log.i(TAG, "Flaky (passed on retry): " + flaky);
+      Log.i(TAG, "Failed: " + failed);
+      Log.i(TAG, "Total tests: " + testRetryMap.size());
+      
+      if (flaky > 0) {
+        Log.i(TAG, "=== FLAKY TESTS ===");
+        for (java.util.Map.Entry<String, TestRetryInfo> entry : testRetryMap.entrySet()) {
+          if (entry.getValue().flaky) {
+            Log.i(TAG, "  " + entry.getKey() + " (attempts: " + entry.getValue().attempts + ")");
+          }
+        }
+      }
+      
+      if (failed > 0) {
+        Log.i(TAG, "=== FAILED TESTS ===");
+        for (java.util.Map.Entry<String, TestRetryInfo> entry : testRetryMap.entrySet()) {
+          if (!entry.getValue().passed) {
+            Log.i(TAG, "  " + entry.getKey() + " (attempts: " + entry.getValue().attempts + ")");
+          }
+        }
+      }
+    }
+    
+    finish(Activity.RESULT_OK, createResultBundle());
   }
 
   private void clearPackageData() {

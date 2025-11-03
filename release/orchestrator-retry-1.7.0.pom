@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.inditex.testing</groupId>
+    <artifactId>orchestrator-retry</artifactId>
+    <version>1.7.0</version>
+    <packaging>apk</packaging>    <name>Android Test Orchestrator with Retry Logic</name>
+    <description>Custom AndroidX Test Orchestrator 1.7.0 with intelligent retry logic for flaky test detection</description>
+    
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+    
+    <dependencies>
+        <dependency>
+            <groupId>androidx.test</groupId>
+            <artifactId>orchestrator</artifactId>
+            <version>1.5.0</version>
+            <scope>compile</scope>
+        </dependency>
+        <dependency>
+            <groupId>androidx.test.services</groupId>
+            <artifactId>test-services</artifactId>
+            <version>1.5.0</version>
+            <scope>compile</scope>
+        </dependency>
+    </dependencies>
+</project>

@@ -1,0 +1,48 @@
+// Example: Add this to your root build.gradle or settings.gradle
+
+// If using build.gradle (Groovy):
+allprojects {
+    repositories {
+        maven {
+            url "https://inditex.jfrog.io/artifactory/gradle-snapshot-local/"
+            credentials {
+                username = project.findProperty("jfrog.username") ?: System.getenv("JFROG_USERNAME")
+                password = project.findProperty("jfrog.password") ?: System.getenv("JFROG_PASSWORD")
+            }
+        }
+    }
+}
+
+// If using settings.gradle (Groovy):
+dependencyResolutionManagement {
+    repositories {
+        maven {
+            url "https://inditex.jfrog.io/artifactory/gradle-snapshot-local/"
+            credentials {
+                username = providers.gradleProperty("jfrog.username")
+                    .orElse(providers.environmentVariable("JFROG_USERNAME"))
+                    .getOrElse("")
+                password = providers.gradleProperty("jfrog.password")
+                    .orElse(providers.environmentVariable("JFROG_PASSWORD"))
+                    .getOrElse("")
+            }
+        }
+    }
+}
+
+// If using build.gradle.kts (Kotlin):
+allprojects {
+    repositories {
+        maven {
+            url = uri("https://inditex.jfrog.io/artifactory/gradle-snapshot-local/")
+            credentials {
+                username = providers.gradleProperty("jfrog.username")
+                    .orElse(providers.environmentVariable("JFROG_USERNAME"))
+                    .orNull
+                password = providers.gradleProperty("jfrog.password")
+                    .orElse(providers.environmentVariable("JFROG_PASSWORD"))
+                    .orNull
+            }
+        }
+    }
+}
