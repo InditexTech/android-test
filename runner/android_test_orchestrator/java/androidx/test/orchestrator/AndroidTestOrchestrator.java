@@ -51,6 +51,7 @@ import androidx.test.orchestrator.junit.ParcelableDescription;
 import androidx.test.orchestrator.listeners.OrchestrationListenerManager;
 import androidx.test.orchestrator.listeners.OrchestrationResult;
 import androidx.test.orchestrator.listeners.OrchestrationResultPrinter;
+import androidx.test.orchestrator.listeners.RetryBufferingListener;
 import androidx.test.services.shellexecutor.ClientNotConnected;
 import androidx.test.services.shellexecutor.ShellExecSharedConstants;
 import androidx.test.services.shellexecutor.ShellExecutor;
@@ -163,6 +164,7 @@ public final class AndroidTestOrchestrator extends android.app.Instrumentation
   private int maxRetries = 0;
   private int totalFailureCount = 0;
   private java.util.Map<String, TestRetryInfo> testRetryMap = new java.util.HashMap<>();
+  private RetryBufferingListener retryBuffer;
   
   private static class TestRetryInfo {
     int attempts = 0;
@@ -357,7 +359,15 @@ public final class AndroidTestOrchestrator extends android.app.Instrumentation
       listenerManager.testProcessFinished(getOutputFile(test));
       
       // Track test result and check if we should retry
-      if (maxRetries > 0 && trackTestResult(test)) {
+      boolean retry = maxRetries > 0 && trackTestResult(test);
+      if (retryBuffer != null) {
+        if (retry) {
+          retryBuffer.discard();
+        } else {
+          retryBuffer.flush();
+        }
+      }
+      if (retry) {
         // Immediate retry - re-execute the same test
         Log.i(TAG, "RETRY: Immediately retrying test: " + test);
         TestRetryInfo info = testRetryMap.get(test);
@@ -600,8 +610,14 @@ public final class AndroidTestOrchestrator extends android.app.Instrumentation
   }
 
   private void addListeners(int testSize) {
-    listenerManager.addListener(resultBuilder);
-    listenerManager.addListener(resultPrinter);
+    if (maxRetries > 0) {
+      // Retried attempts must not reach AGP, or a test that passes on retry still fails the run.
+      retryBuffer = new RetryBufferingListener(Arrays.asList(resultBuilder, resultPrinter));
+      listenerManager.addListener(retryBuffer);
+    } else {
+      listenerManager.addListener(resultBuilder);
+      listenerManager.addListener(resultPrinter);
+    }
     listenerManager.orchestrationRunStarted(testSize);
   }
 
@@ -609,6 +625,9 @@ public final class AndroidTestOrchestrator extends android.app.Instrumentation
     OutputStream stream = new ByteArrayOutputStream();
     PrintStream writer = new PrintStream(stream);
     Bundle bundle = new Bundle();
+    if (retryBuffer != null) {
+      retryBuffer.flush();
+    }
 
     try {
       resultBuilder.orchestrationRunFinished();
