@@ -447,29 +447,9 @@ public final class AndroidTestOrchestrator extends android.app.Instrumentation
     
     info.attempts++;
     
-    // Check if the test had failures by looking at the result file
-    boolean testFailed = false;
-    try {
-      String outputFilePath = getOutputFile(testName);
-      if (outputFilePath != null) {
-        java.io.File outputFile = new java.io.File(outputFilePath);
-        if (outputFile.exists()) {
-          java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(outputFile));
-          String line;
-          while ((line = reader.readLine()) != null) {
-            if (line.contains("FAILURES!!!") || (line.contains("Tests run:") && line.contains("Failures:") && !line.contains("Failures: 0"))) {
-              testFailed = true;
-              totalFailureCount++;
-              break;
-            }
-          }
-          reader.close();
-        }
-      }
-    } catch (Exception e) {
-      Log.w(TAG, "Error checking test result: " + e.getMessage());
-      // Assume failed if we can't read the file
-      testFailed = true;
+    // Includes process crashes, which the listener manager reports as test failures.
+    boolean testFailed = retryBuffer != null && retryBuffer.hasFailure();
+    if (testFailed) {
       totalFailureCount++;
     }
     

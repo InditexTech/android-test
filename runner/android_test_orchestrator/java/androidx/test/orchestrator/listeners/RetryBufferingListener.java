@@ -35,9 +35,15 @@ public final class RetryBufferingListener extends OrchestrationRunListener {
 
   private final List<OrchestrationRunListener> delegates;
   private final List<Event> pending = new ArrayList<>();
+  private boolean failed;
 
   public RetryBufferingListener(List<OrchestrationRunListener> delegates) {
     this.delegates = new ArrayList<>(delegates);
+  }
+
+  /** Whether the buffered attempt reported a failure. */
+  public synchronized boolean hasFailure() {
+    return failed;
   }
 
   /** Reports the buffered attempt to the delegates. */
@@ -48,11 +54,13 @@ public final class RetryBufferingListener extends OrchestrationRunListener {
       }
     }
     pending.clear();
+    failed = false;
   }
 
   /** Drops the buffered attempt because it is going to be retried. */
   public synchronized void discard() {
     pending.clear();
+    failed = false;
   }
 
   private synchronized void buffer(Event event) {
@@ -90,7 +98,8 @@ public final class RetryBufferingListener extends OrchestrationRunListener {
   }
 
   @Override
-  public void testFailure(ParcelableFailure failure) {
+  public synchronized void testFailure(ParcelableFailure failure) {
+    failed = true;
     buffer(listener -> listener.testFailure(failure));
   }
 
